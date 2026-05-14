@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MID TI – 2026</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="shell">
+
+  <!-- ── SIDEBAR ── -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="brand">MID TI</div>
+      <div class="sub">Dashboard · 2026</div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">Menu</div>
+      <button class="nav-item active" data-page="visao">
+        <span class="icon">🏠</span> Visão Geral
+      </button>
+      <button class="nav-item" data-page="sla">
+        <span class="icon">📋</span> SLA por Área
+      </button>
+      <button class="nav-item" data-page="projetos">
+        <span class="icon">🗂️</span> Projetos
+      </button>
+    </nav>
+    <div class="sidebar-footer">
+      <button class="btn-reload" id="btn-reload">⟳ Recarregar dados</button>
+      <div class="footer-hint">Fonte: data/mid.xlsx</div>
+    </div>
+  </aside>
+
+  <!-- ── CONTENT ── -->
+  <div class="content">
+    <header class="topbar">
+      <div class="topbar-title" id="topbar-title">Painel de Metas – TI</div>
+      <div class="topbar-right">
+        <span class="periodo-badge" id="periodo-badge">–</span>
+        <span class="last-update" id="last-update"></span>
+      </div>
+    </header>
+
+    <main class="main" id="main-content">
+      <div class="loading-state" id="loading">
+        <div class="spinner"></div>
+        <p>Carregando dados…</p>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
