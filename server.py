@@ -9,10 +9,9 @@ import pandas as pd
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 
-BASE   = os.path.dirname(os.path.abspath(__file__))
-EXCEL  = os.path.join(BASE, 'data', 'mid.xlsx')
+BASE  = os.path.dirname(os.path.abspath(__file__))
+EXCEL = os.path.join(BASE, 'data', 'mid.xlsx')
 
-# ── Mapeamento de nomes ──────────────────────────────────────────────────────
 MESES_PT = {
     1:'Janeiro',2:'Fevereiro',3:'Março',4:'Abril',5:'Maio',6:'Junho',
     7:'Julho',8:'Agosto',9:'Setembro',10:'Outubro',11:'Novembro',12:'Dezembro'
@@ -61,12 +60,17 @@ def norm_mes(v):
         if sl == nome.lower() or sl == nome.lower()[:3]: return nome
     return s.capitalize()
 
-# ── Carrega e processa o Excel ───────────────────────────────────────────────
+def safe_pct(v):
+    try:
+        f = float(v)
+        return round(f * 100, 1)
+    except Exception:
+        return 0.0
+
 def carregar_dados():
     if not os.path.exists(EXCEL):
         return None, None
 
-    # ── Aba Report ─────────────────────────────────────────────────────────
     df = pd.read_excel(EXCEL, sheet_name='Report')
     df.columns = [str(c).strip() for c in df.columns]
     df['Mês'] = df['Mês'].apply(norm_mes)
@@ -74,12 +78,11 @@ def carregar_dados():
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
 
+    # ── SLA ───────────────────────────────────────────────────────────────
     df_sla = df[df['Tipo'].isin(['Suporte', 'Satisfação'])].copy()
     df_sla[['area', 'subarea']] = df_sla['Indicador'].apply(
         lambda x: pd.Series(classificar(x))
     )
-
-    # Montar JSON de SLA: { mes: { subarea: { area, linhas[] } } }
     sla_data = {}
     for mes in ORDEM_MESES:
         d = df_sla[df_sla['Mês'] == mes]
@@ -94,79 +97,80 @@ def carregar_dados():
                     tipo = row['Tipo']
                     meta = round(float(row['Meta']) * 100, 1) if row['Meta'] > 0 else None
                     linhas.append({
-                        'nome':       'Incidentes/Solicitação (%)' if tipo == 'Suporte' else 'Satisfação (%)',
-                        'tipo':       tipo,
-                        'meta':       meta,
-                        'realizado':  round(float(row['Realizado'])  * 100, 1),
-                        'acumulado':  round(float(row['Acumulado'])  * 100, 1),
-                        'status':     str(row['Status']).upper().strip(),
-                        'info_only':  tipo == 'Satisfação' and area == 'Sistemas',
-                        'area':       area,
+                        'nome':      'Incidentes/Solicitação (%)' if tipo == 'Suporte' else 'Satisfação (%)',
+                        'tipo':      tipo,
+                        'meta':      meta,
+                        'realizado': round(float(row['Realizado']) * 100, 1),
+                        'acumulado': round(float(row['Acumulado']) * 100, 1),
+                        'status':    str(row['Status']).upper().strip(),
+                        'info_only': tipo == 'Satisfação' and area == 'Sistemas',
+                        'area':      area,
                     })
                 if linhas:
                     sla_data[mes][sub] = {'area': area, 'linhas': linhas}
 
-    # ── Aba Visão ──────────────────────────────────────────────────────────
-    raw = pd.read_excel(EXCEL, sheet_name='Visão', header=None)
-    cols = [str(c).strip() if str(c) not in ('nan', 'None') else f'_c{i}'
-            for i, c in enumerate(raw.iloc[1])]
-    dv = raw.iloc[2:].copy()
-    dv.columns = cols
-    dv = dv.reset_index(drop=True)
-    for c in ['ID', 'Indicador', 'Responsável', 'Marcos', 'Status']:
-        if c in dv.columns:
-            dv[c] = dv[c].ffill()
-    for c in ['Métrica', 'Status', 'Indicador', 'Responsável']:
-        if c in dv.columns:
-            dv[c] = dv[c].astype(str).str.strip().replace({'nan': '', 'None': ''})
-    for m in COLS_MESES:
-        if m in dv.columns:
-            dv[m] = pd.to_numeric(dv[m], errors='coerce').fillna(0)
+    # ── PROJETOS (Tipo = Projeto ou Compartilhado) ─────────────────────────
+    df_proj = df[df['Tipo'].isin(['Projeto', 'Compartilhado'])].copy()
 
+    # Agrupar por indicador: cada indicador tem 12 linhas (uma por mês)
     proj_data = []
-    for pid in dv['ID'].dropna().unique():
-        dp = dv[dv['ID'] == pid]
-        if dp.empty: continue
-        ref = dp[dp['Métrica'] == 'Meta']
-        if ref.empty: ref = dp.iloc[[0]]
-        r = ref.iloc[0]
-        meses_vals = {}
-        for metr in ['Meta', 'Realizado', 'Acumulado']:
-            row_m = dp[dp['Métrica'] == metr]
-            if row_m.empty: continue
-            rv = row_m.iloc[0]
-            meses_vals[metr] = [
-                round(float(rv[c]) * 100, 1) if c in rv.index else 0
-                for c in COLS_MESES
-            ]
+    for indicador, grp in df_proj.groupby('Indicador', sort=False):
+        ref = grp.iloc[0]
+        tipo      = str(ref.get('Tipo', 'Projeto')).strip()
+        resp      = str(ref.get('Responsável', '')).strip()
+        marcos    = str(ref.get('Marcos', '')).strip() if 'Marcos' in grp.columns else ''
+        status    = str(ref.get('Status', '')).upper().strip()
+        compartilhado = 'Sim' if tipo == 'Compartilhado' else 'Não'
+
+        # Montar valores por mês (índice 0=jan … 11=dez)
+        meta_vals  = [0.0] * 12
+        real_vals  = [0.0] * 12
+        acum_vals  = [0.0] * 12
+
+        for _, row in grp.iterrows():
+            mes = row['Mês']
+            if mes not in ORDEM_MESES:
+                continue
+            idx = ORDEM_MESES.index(mes)
+            meta_vals[idx] = safe_pct(row['Meta'])
+            real_vals[idx] = safe_pct(row['Realizado'])
+            acum_vals[idx] = safe_pct(row['Acumulado'])
+
         proj_data.append({
-            'id':          str(pid),
-            'indicador':   str(r.get('Indicador', '')),
-            'responsavel': str(r.get('Responsável', '')),
-            'marcos':      str(r.get('Marcos', '')),
-            'status':      str(r.get('Status', '')),
-            'meses':       meses_vals,
+            'indicador':     indicador,
+            'tipo':          tipo,
+            'compartilhado': compartilhado,
+            'responsavel':   resp,
+            'marcos':        marcos,
+            'status':        status,
+            'meses': {
+                'Meta':      meta_vals,
+                'Realizado': real_vals,
+                'Acumulado': acum_vals,
+            }
         })
+
+    # Ordenar: Projetos primeiro, depois Compartilhados; dentro de cada grupo, por nome
+    proj_data.sort(key=lambda p: (0 if p['tipo'] == 'Projeto' else 1, p['indicador']))
 
     return sla_data, proj_data
 
 
-# ── Rotas ────────────────────────────────────────────────────────────────────
+# ── Rotas ─────────────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
     return send_file(os.path.join(BASE, 'templates', 'index.html'))
 
 @app.route('/api/dados')
 def api_dados():
-    """Retorna todos os dados do Excel em JSON. Lê o arquivo a cada chamada."""
     sla, projetos = carregar_dados()
     if sla is None:
         return jsonify({'erro': f'Arquivo não encontrado: {EXCEL}'}), 404
     return jsonify({
-        'sla':          sla,
-        'projetos':     projetos,
-        'ordem_meses':  ORDEM_MESES,
-        'meses_abrev':  MESES_ABREV,
+        'sla':         sla,
+        'projetos':    projetos,
+        'ordem_meses': ORDEM_MESES,
+        'meses_abrev': MESES_ABREV,
     })
 
 @app.route('/static/<path:path>')

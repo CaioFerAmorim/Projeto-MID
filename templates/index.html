@@ -6,54 +6,133 @@
 <title>MID TI – 2026</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
 <link rel="stylesheet" href="/static/css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/choices.js/public/assets/styles/choices.min.css">
+<script src="https://cdn.jsdelivr.net/npm/choices.js/public/assets/scripts/choices.min.js"></script>
 </head>
 <body>
 <div class="shell">
 
   <!-- ── SIDEBAR ── -->
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar">
+
+    <!-- Botão retrair: fica na borda direita da sidebar -->
+    <button class="sidebar-toggle-btn" id="sb-toggle" onclick="toggleSidebar()" title="Recolher menu">
+      <i class="ti ti-chevron-left" id="sb-toggle-icon"></i>
+    </button>
+
+    <!-- Logo -->
     <div class="sidebar-logo">
-      <div class="brand">MID TI</div>
-      <div class="sub">Dashboard · 2026</div>
+      <div class="sb-logo-icon">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <rect width="28" height="28" rx="8" fill="#1a3a6b"/>
+          <text x="14" y="19" text-anchor="middle" font-family="DM Sans,sans-serif"
+            font-size="11" font-weight="700" fill="white">TI</text>
+        </svg>
+      </div>
+      <div class="sb-logo-text">
+        <div class="brand">MID TI</div>
+        <div class="sub">Dashboard · 2026</div>
+      </div>
     </div>
+
+    <!-- Nav -->
     <nav class="sidebar-nav">
-      <div class="nav-section">Menu</div>
-      <button class="nav-item active" data-page="visao">
-        <span class="icon">🏠</span> Visão Geral
+      <div class="nav-section-label">Menu</div>
+      <button class="nav-item active" data-page="visao" title="Visão Geral">
+        <i class="ti ti-home nav-icon" aria-hidden="true"></i>
+        <span class="nav-label">Visão Geral</span>
       </button>
-      <button class="nav-item" data-page="sla">
-        <span class="icon">📋</span> SLA por Área
+      <button class="nav-item" data-page="sla" title="SLA por Área">
+        <i class="ti ti-clipboard-list nav-icon" aria-hidden="true"></i>
+        <span class="nav-label">SLA por Área</span>
       </button>
-      <button class="nav-item" data-page="projetos">
-        <span class="icon">🗂️</span> Projetos
+      <button class="nav-item" data-page="projetos" title="Projetos">
+        <i class="ti ti-layout-kanban nav-icon" aria-hidden="true"></i>
+        <span class="nav-label">Projetos</span>
       </button>
     </nav>
+
+    <!-- Footer -->
     <div class="sidebar-footer">
-      <button class="btn-reload" id="btn-reload">⟳ Recarregar dados</button>
-      <div class="footer-hint">Fonte: data/mid.xlsx</div>
+      <button class="btn-reload" id="btn-reload" title="Recarregar dados">
+        <i class="ti ti-refresh" aria-hidden="true"></i>
+        <span class="nav-label">Recarregar dados</span>
+      </button>
+      <div class="footer-hint nav-label">Fonte: data/mid.xlsx</div>
     </div>
+
   </aside>
 
   <!-- ── CONTENT ── -->
-  <div class="content">
+  <div class="content" id="content">
+
     <header class="topbar">
-      <div class="topbar-title" id="topbar-title">Painel de Metas – TI</div>
+      <div class="topbar-left">
+        <div class="topbar-title" id="topbar-title">Painel de Metas</div>
+      </div>
       <div class="topbar-right">
-        <span class="periodo-badge" id="periodo-badge">–</span>
         <span class="last-update" id="last-update"></span>
+        <div style="display:flex;align-items:center;gap:4px">
+  <button class="btn-icon" onclick="adjustZoom(-10)" title="Diminuir zoom" style="font-size:16px;font-weight:600">−</button>
+  <span id="zoom-label" style="font-size:0.72rem;color:#94a3b8;min-width:34px;text-align:center">100%</span>
+  <button class="btn-icon" onclick="adjustZoom(10)" title="Aumentar zoom" style="font-size:16px;font-weight:600">+</button>
+</div>
+        <button class="btn-icon" id="btn-fullscreen" title="Tela cheia" onclick="toggleFullscreen()">
+          <i class="ti ti-arrows-maximize" id="fs-icon"></i>
+        </button>
       </div>
     </header>
 
     <main class="main" id="main-content">
-      <div class="loading-state" id="loading">
+      <div class="loading-state">
         <div class="spinner"></div>
         <p>Carregando dados…</p>
       </div>
     </main>
+
   </div>
 </div>
 
 <script src="/static/js/app.js"></script>
+<script>
+const SB_EXPANDED = 220;
+const SB_COLLAPSED = 64;
+
+function toggleSidebar() {
+  const sb   = document.getElementById('sidebar');
+  const ct   = document.getElementById('content');
+  const icon = document.getElementById('sb-toggle-icon');
+  const btn  = document.getElementById('sb-toggle');
+  const open = sb.classList.toggle('collapsed');
+  ct.style.marginLeft = open ? SB_COLLAPSED + 'px' : SB_EXPANDED + 'px';
+  btn.style.left = open ? (SB_COLLAPSED - 13) + 'px' : (SB_EXPANDED - 13) + 'px';
+  icon.className = open ? 'ti ti-chevron-right' : 'ti ti-chevron-left';
+  // Redesenhar gráfico após animação
+  setTimeout(() => {
+    if (window.drawEvol && window.state?.visao?.modo) drawEvol(state.visao.modo);
+  }, 300);
+}
+
+function toggleFullscreen() {
+  const icon = document.getElementById('fs-icon');
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen();
+    icon.className = 'ti ti-arrows-minimize';
+    document.getElementById('btn-fullscreen').title = 'Sair da tela cheia';
+  } else {
+    document.exitFullscreen();
+    icon.className = 'ti ti-arrows-maximize';
+    document.getElementById('btn-fullscreen').title = 'Tela cheia';
+  }
+}
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement) {
+    document.getElementById('fs-icon').className = 'ti ti-arrows-maximize';
+    document.getElementById('btn-fullscreen').title = 'Tela cheia';
+  }
+});
+</script>
 </body>
 </html>
