@@ -171,21 +171,34 @@ function initChoices(id) {
 ═══════════════════════════════════════════════════════ */
 let evolResizeObs = null;
 
+// Mapeamento área → subáreas (deve bater com MAPA_AREAS do server.py)
+const AREA_MAP = {
+  'Infraestrutura': ['DATA CENTER','REDES','SERVIÇOS (EST. TRABALHO)'],
+  'Sistemas':       ['COMERCIAL & INOVAÇÃO','SUPRIMENTOS & APOIO','FINANÇAS & PLANEJAMENTO','OPERAÇÕES & ENGENHARIA'],
+  'BI':             ['BI'],
+  'Cybersegurança': ['GERAL'],
+};
+
+// Agrupa linhas SLA de um mês por área definida acima
+function linhasPorArea(sla, area) {
+  const subs = AREA_MAP[area] || [];
+  const result = [];
+  Object.entries(sla).forEach(([sub, bloco]) => {
+    if (subs.includes(sub)) bloco.linhas.forEach(l => result.push(l));
+  });
+  return result;
+}
+
 function renderVisao(root) {
-  root.innerHTML = buildFilterBar('visao') + `
-    <div id="vg-kpis" class="kpi-grid"></div>
-    <div class="section-header">
-      <span class="section-title">Indicadores SLA</span>
-      <div class="section-line"></div>
-    </div>
-    <div class="card-table" id="vg-tabela"></div>
+  root.innerHTML = `
+    <div id="vg-kpis" class="kpi-grid-vg"></div>
     <div class="section-header" style="margin-top:22px">
-      <span class="section-title">Evolução Mensal</span>
+      <span class="section-title">Evolução Anual — Realizado</span>
       <div class="section-line"></div>
     </div>
     <div class="charts-row">
       <div class="chart-card">
-        <div class="chart-title">Realizado por mês (%)</div>
+        <div class="chart-title">Trajetória por área (%)</div>
         <svg id="chart-evol" style="width:100%;overflow:visible"></svg>
       </div>
       <div class="chart-card">
@@ -203,118 +216,244 @@ function renderVisao(root) {
       </div>
     </div>`;
 
-  setLastMes('visao-mes');
-  setTimeout(() => initChoices('visao-mes'), 0);
   reRenderVisao();
 
   if (evolResizeObs) evolResizeObs.disconnect();
   const svg = document.getElementById('chart-evol');
   if (svg && window.ResizeObserver) {
-    evolResizeObs = new ResizeObserver(() => drawEvol(state.visao.modo));
+    evolResizeObs = new ResizeObserver(() => drawEvolVisao());
     evolResizeObs.observe(svg.parentElement);
   }
 }
 
 function reRenderVisao() {
-  const modo   = state.visao.modo;
-  const mes    = document.getElementById('visao-mes')?.value;
-  if (!mes) return;
-  const mesIdx = MESES().indexOf(mes);
+  const avg = (arr, fn) => arr.length ? arr.reduce((a,b) => a + fn(b), 0) / arr.length : null;
 
-  updateInfo('visao-info', modo, mes);
-  setPeriodoBadge(modo, mes);
+  // Descobrir último mês com dados de SLA
+  let ultimoMes = null, ultimoIdx = -1;
+  MESES().forEach((m, i) => {
+    const sla = DATA.sla[m] || {};
+    const linhas = Object.values(sla).flatMap(b => b.linhas);
+    const temDados = linhas.some(l => l.realizado > 0 && l.meta !== null);
+    if (temDados) { ultimoMes = m; ultimoIdx = i; }
+  });
 
-  const sla = DATA.sla[mes] || {};
-  const linhas = [];
-  Object.values(sla).forEach(b => b.linhas.forEach(l => linhas.push(l)));
-  const comMeta = linhas.filter(l => l.meta !== null);
-
-  const avg = (arr, fn) => arr.length ? arr.reduce((a, b) => a + fn(b), 0) / arr.length : null;
-  const sup = comMeta.filter(l => l.tipo === 'Suporte');
-  const sat = comMeta.filter(l => l.tipo === 'Satisfação');
-  const incReal = avg(sup, l => getVal(l, modo));
-  const satReal = avg(sat, l => getVal(l, modo));
-  const incMeta = avg(sup, l => l.meta) ?? 90;
-  const satMeta = avg(sat, l => l.meta) ?? 90;
-
-  let dInc = 0, dSat = 0;
-  if (mesIdx > 0) {
-    const ant  = MESES()[mesIdx - 1];
-    const sla2 = DATA.sla[ant] || {};
-    const l2   = [];
-    Object.values(sla2).forEach(b => b.linhas.forEach(l => l2.push(l)));
-    const s2 = l2.filter(l => l.tipo === 'Suporte'    && l.meta !== null);
-    const t2 = l2.filter(l => l.tipo === 'Satisfação' && l.meta !== null);
-    const pr = arr => avg(arr, l => l.realizado);
-    if (incReal !== null && pr(s2) !== null) dInc = incReal - pr(s2);
-    if (satReal !== null && pr(t2) !== null) dSat = satReal - pr(t2);
+  if (!ultimoMes) {
+    document.getElementById('vg-kpis').innerHTML =
+      `<div style="grid-column:1/-1;text-align:center;color:#a0aec0;padding:40px">Sem dados disponíveis</div>`;
+    return;
   }
 
-  const atrasados = comMeta.filter(l => l.status === 'L').length;
+  const sla    = DATA.sla[ultimoMes] || {};
+  const slaAnt = ultimoIdx > 0 ? (DATA.sla[MESES()[ultimoIdx-1]] || {}) : {};
 
-  const mkDelta = d => d !== 0
-    ? `<span class="${d > 0 ? 'up' : 'dn'}">${d > 0 ? '↑' : '↓'} ${Math.abs(d).toFixed(1)} p.p.</span> vs mês ant.`
-    : '';
+  // Calcular métricas para uma área no último mês com dados
+  function calcArea(area) {
+    const linhas    = linhasPorArea(sla, area);
+    const linhasAnt = linhasPorArea(slaAnt, area);
+    const comMeta   = linhas.filter(l => l.meta !== null);
+    const sup       = comMeta.filter(l => l.tipo === 'Suporte');
+    const sat       = comMeta.filter(l => l.tipo === 'Satisfação');
+    const incReal   = avg(sup, l => l.realizado);
+    const satReal   = avg(sat, l => l.realizado);
+    const incMeta   = avg(sup, l => l.meta);
+    const satMeta   = avg(sat, l => l.meta);
+    // Tendência vs mês anterior
+    const supAnt = linhasPorArea(slaAnt, area).filter(l => l.tipo === 'Suporte'    && l.meta !== null);
+    const satAnt = linhasPorArea(slaAnt, area).filter(l => l.tipo === 'Satisfação' && l.meta !== null);
+    const dInc   = incReal !== null && supAnt.length ? incReal - avg(supAnt, l => l.realizado) : 0;
+    const dSat   = satReal !== null && satAnt.length ? satReal - avg(satAnt, l => l.realizado) : 0;
+    const risco  = comMeta.filter(l => l.status === 'L').length;
+    return { incReal, satReal, incMeta, satMeta, dInc, dSat, risco, comMeta };
+  }
 
-  const kpis = [
-    { label: 'Visão Geral TI',
-      value: atrasados === 0 ? 'Saudável' : 'Em Alerta',
-      sub:   atrasados === 0 ? 'Todos os indicadores em dia' : `${atrasados} com status L`,
-      cls:   atrasados === 0 ? 'green' : 'red', delta: '' },
-    { label: 'SLA Incidentes',
-      value: incReal !== null ? `${incReal.toFixed(1)}%` : '–',
-      sub:   `Meta: ≥ ${incMeta.toFixed(0)}%`,
-      cls:   incReal !== null && incReal >= incMeta ? 'green' : 'red',
-      delta: mkDelta(dInc) },
-    { label: 'SLA Satisfação',
-      value: satReal !== null ? `${satReal.toFixed(1)}%` : '–',
-      sub:   `Meta: ≥ ${satMeta.toFixed(0)}%`,
-      cls:   satReal !== null && satReal >= satMeta ? 'green' : 'red',
-      delta: mkDelta(dSat) },
-    { label: 'Em Risco',
-      value: String(atrasados),
-      sub:   atrasados === 0 ? 'Todos dentro da meta ✅' : `${atrasados} abaixo da meta`,
-      cls:   atrasados === 0 ? 'green' : 'red', delta: '' },
+  // Sparkline de todos os meses até o último com dados
+  function getSparkPts(area, tipo) {
+    return MESES().slice(0, ultimoIdx + 1).map(m => {
+      const ls = linhasPorArea(DATA.sla[m]||{}, area)
+        .filter(l => l.tipo === tipo && l.meta !== null);
+      const v = ls.length ? avg(ls, l => l.realizado) : null;
+      return (v !== null && v > 0) ? v : null;
+    });
+  }
+
+  function sparkline(pontos, color) {
+    const valid = pontos.filter(v => v !== null);
+    if (valid.length < 2) return '';
+    const W=80, H=30, pad=3;
+    const min = Math.min(...valid), max = Math.max(...valid);
+    const range = max - min || 1;
+    const xStep = (W - pad*2) / (pontos.length - 1);
+    let d = '', first = true;
+    pontos.forEach((v, i) => {
+      if (v === null) { first=true; return; }
+      const x = pad + i * xStep;
+      const y = H - pad - ((v - min) / range) * (H - pad*2);
+      d += first ? `M${x},${y}` : `L${x},${y}`; first=false;
+    });
+    return `<svg width="${W}" height="${H}" style="display:block">
+      <path d="${d}" fill="none" stroke="${color}" stroke-width="1.8"
+        stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>`;
+  }
+
+  function cardArea(area, label, icon) {
+    const c = calcArea(area);
+    const saudavel = c.risco === 0;
+
+    const fmtVal = (v) => {
+      if (v === null) return '<span style="color:#c0cad8;font-size:0.95rem">–</span>';
+      return `<span style="font-size:1.6rem;font-weight:700;font-variant-numeric:tabular-nums;
+        color:${v > 0 ? '#1c2b45' : '#a0aec0'}">${v.toFixed(1)}%</span>`;
+    };
+
+    const fmtDelta = (d) => {
+      if (d === 0) return '';
+      const cor = d > 0 ? '#16a34a' : '#dc2626';
+      return `<span style="font-size:0.72rem;color:${cor};font-weight:600">
+        ${d > 0 ? '↑' : '↓'} ${Math.abs(d).toFixed(1)} p.p.</span>`;
+    };
+
+    const statusDot = saudavel
+      ? `<span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:10px;font-size:0.68rem;font-weight:600">✓ Na meta</span>`
+      : `<span style="background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:10px;font-size:0.68rem;font-weight:600">⚠ ${c.risco} fora</span>`;
+
+    const spkInc = getSparkPts(area, 'Suporte');
+    const spkSat = getSparkPts(area, 'Satisfação');
+    const corInc = c.incReal !== null && c.incMeta !== null && c.incReal >= c.incMeta ? '#16a34a' : '#ef4444';
+    const corSat = c.satReal !== null && c.satMeta !== null ? (c.satReal >= c.satMeta ? '#16a34a' : '#ef4444') : '#94a3b8';
+
+    return `
+      <div class="kpi-card-vg">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
+          <div style="font-size:0.65rem;font-weight:700;color:#8394a8;text-transform:uppercase;letter-spacing:.7px">${icon} ${label}</div>
+          ${statusDot}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div style="border-right:1px solid #f0f3f8;padding-right:12px">
+            <div style="font-size:0.62rem;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Incidentes</div>
+            <div style="display:flex;align-items:flex-end;justify-content:space-between">
+              <div>${fmtVal(c.incReal)}<div style="margin-top:2px">${fmtDelta(c.dInc)}</div></div>
+              <div style="opacity:.75">${sparkline(spkInc, corInc)}</div>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:0.62rem;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Satisfação</div>
+            <div style="display:flex;align-items:flex-end;justify-content:space-between">
+              <div>${fmtVal(c.satReal)}<div style="margin-top:2px">${fmtDelta(c.dSat)}</div></div>
+              <div style="opacity:.75">${sparkline(spkSat, corSat)}</div>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:10px;font-size:0.68rem;color:#b0beca">
+          Referência: ${ultimoMes}
+        </div>
+      </div>`;
+  }
+
+  // Card Áreas em Risco
+  const todasLinhas = Object.values(sla).flatMap(b => b.linhas).filter(l => l.meta !== null);
+  const totalRisco  = todasLinhas.filter(l => l.status === 'L').length;
+  const cardRisco   = `
+    <div class="kpi-card-vg kpi-card-risco ${totalRisco === 0 ? 'risco-ok' : 'risco-alerta'}">
+      <div style="font-size:0.65rem;font-weight:700;color:#8394a8;text-transform:uppercase;letter-spacing:.7px;margin-bottom:10px">⚠ Áreas em Risco</div>
+      <div style="font-size:3rem;font-weight:700;line-height:1;margin-bottom:8px;
+        color:${totalRisco===0?'#16a34a':'#dc2626'}">${totalRisco}</div>
+      <div style="font-size:0.78rem;color:${totalRisco===0?'#16a34a':'#dc2626'}">
+        ${totalRisco === 0 ? '✅ Todas dentro da meta' : `${totalRisco} indicador(es) fora`}
+      </div>
+      <div style="margin-top:8px;font-size:0.68rem;color:#b0beca">Ref: ${ultimoMes}</div>
+    </div>`;
+
+  document.getElementById('vg-kpis').innerHTML =
+    cardArea('Infraestrutura', 'Infraestrutura', '🖥') +
+    cardArea('Sistemas',       'Sistemas',        '⚙') +
+    cardArea('BI',             'BI',              '📊') +
+    cardRisco;
+
+  drawEvolVisao();
+
+  const acima  = todasLinhas.filter(l => l.realizado >= l.meta).length;
+  const abaixo = todasLinhas.length - acima;
+  drawDonut(acima, abaixo, todasLinhas.length);
+}
+
+/* ── Gráfico de evolução da Visão Geral (uma linha por área) ── */
+function drawEvolVisao() {
+  const svg = document.getElementById('chart-evol');
+  if (!svg) return;
+  const W = svg.parentElement.clientWidth - 40 || 500;
+  const H = 220;
+  const avg = (arr, fn) => arr.length ? arr.reduce((a,b) => a+fn(b), 0)/arr.length : null;
+
+  const AREAS_GRAF = [
+    { key: 'Infraestrutura', label: 'Infra',    color: '#1a3a6b' },
+    { key: 'Sistemas',       label: 'Sistemas', color: '#16a34a' },
+    { key: 'BI',             label: 'BI',       color: '#d97706' },
   ];
 
-  document.getElementById('vg-kpis').innerHTML = kpis.map((k, i) => `
-    <div class="kpi-card ${k.cls}" style="animation-delay:${i * 0.07}s">
-      <div class="kpi-label">${k.label}</div>
-      <div class="kpi-value">${k.value}</div>
-      <div class="kpi-delta">${k.delta}</div>
-      <div class="kpi-sub">${k.sub}</div>
-    </div>`).join('');
+  // Para cada área, média do realizado de Suporte por mês
+  const series = AREAS_GRAF.map(a => ({
+    ...a,
+    pts: MESES().map(m => {
+      const ls = linhasPorArea(DATA.sla[m]||{}, a.key)
+        .filter(l => l.tipo === 'Suporte' && l.meta !== null);
+      const v = ls.length ? avg(ls, l => l.realizado) : null;
+      return (v !== null && v > 0) ? v * 100 : null;
+    })
+  }));
 
-  const rows = comMeta.map(l => {
-    const val = getVal(l, modo);
-    const ok  = val >= l.meta;
-    const tipo = l.tipo === 'Suporte'
-      ? '<span class="badge badge-sup">Suporte</span>'
-      : '<span class="badge badge-sat">Satisfação</span>';
-    const sl = labelStatus(l.status);
-    return `<tr>
-      <td>${l.nome}</td><td>${tipo}</td>
-      <td class="${ok ? 'v-ok' : 'v-bad'}">${val.toFixed(1)}%</td>
-      <td class="v-meta">≥ ${l.meta.toFixed(0)}%</td>
-      <td>${farolHtml(val, l.meta, l.info_only)}</td>
-      <td>${badgeStatus(sl)}</td>
-    </tr>`;
-  }).join('');
+  const pad = { l:36, r:24, t:10, b:44 };
+  const xW = W - pad.l - pad.r;
+  const yH = H - pad.t - pad.b;
+  const allV = series.flatMap(s => s.pts).filter(v => v !== null);
+  const minY = allV.length ? Math.max(0,  Math.min(...allV) - 5) : 0;
+  const maxY = allV.length ? Math.min(105, Math.max(...allV) + 5) : 105;
+  const xPos   = i => pad.l + i * (xW / (MESES().length - 1));
+  const yScale = v => (yH - (v - minY) / (maxY - minY) * yH) + pad.t;
 
-  document.getElementById('vg-tabela').innerHTML = `
-    <table class="data-table">
-      <thead><tr>
-        <th>Indicador</th><th>Tipo</th>
-        <th>${modo === 'acum' ? 'Acumulado' : 'Realizado'}</th>
-        <th>Meta</th><th>Farol</th><th>Status</th>
-      </tr></thead>
-      <tbody>${rows || '<tr><td colspan="6" style="text-align:center;color:#a0aec0;padding:24px">Sem dados com meta preenchida para este mês</td></tr>'}</tbody>
-    </table>`;
+  let html = '';
 
-  drawEvol(modo);
-  const acima  = comMeta.filter(l => getVal(l, modo) >= l.meta).length;
-  const abaixo = comMeta.length - acima;
-  drawDonut(acima, abaixo, comMeta.length);
+  // Grid
+  [0, 25, 50, 75, 100].filter(v => v >= minY && v <= maxY).forEach(v => {
+    const y = yScale(v);
+    html += `<line x1="${pad.l}" y1="${y}" x2="${W-pad.r}" y2="${y}" stroke="#f0f3f8" stroke-width="1"/>`;
+    html += `<text x="${pad.l-5}" y="${y+4}" text-anchor="end" font-size="10" fill="#b0beca">${v}</text>`;
+  });
+
+  // Eixo X
+  ABREV().forEach((ab, i) => {
+    html += `<text x="${xPos(i)}" y="${H-pad.b+14}" text-anchor="middle" font-size="10" fill="#b0beca">${ab}</text>`;
+  });
+
+  // Linhas por área
+  series.forEach(s => {
+    let d = '', first = true;
+    s.pts.forEach((v, i) => {
+      if (v === null) { first=true; return; }
+      d += first ? `M${xPos(i)},${yScale(v)}` : `L${xPos(i)},${yScale(v)}`; first=false;
+    });
+    if (!d) return;
+    html += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2.5"
+      stroke-linecap="round" stroke-linejoin="round"/>`;
+    s.pts.forEach((v, i) => {
+      if (v === null) return;
+      html += `<circle cx="${xPos(i)}" cy="${yScale(v)}" r="3.5"
+        fill="${s.color}" stroke="#fff" stroke-width="2"/>`;
+    });
+  });
+
+  // Legenda
+  let lx = pad.l;
+  series.forEach(s => {
+    html += `<circle cx="${lx+5}" cy="${H-8}" r="5" fill="${s.color}"/>`;
+    html += `<text x="${lx+14}" y="${H-4}" font-size="10" fill="#6b7d94">${s.label}</text>`;
+    lx += 70;
+  });
+
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('height', H);
+  svg.innerHTML = html;
 }
 
 function drawEvol(modo) {
@@ -414,10 +553,62 @@ function drawDonut(acima, abaixo, total) {
 /* ═══════════════════════════════════════════════════════
    SLA POR ÁREA
 ═══════════════════════════════════════════════════════ */
+function mesesComDados() {
+  // Retorna Set com os meses que têm pelo menos um realizado > 0
+  const com = new Set();
+  MESES().forEach(m => {
+    const sla = DATA.sla[m] || {};
+    const linhas = Object.values(sla).flatMap(b => b.linhas);
+    if (linhas.some(l => l.realizado > 0)) com.add(m);
+  });
+  return com;
+}
+
+function mesesComDados() {
+  const com = new Set();
+  MESES().forEach(m => {
+    const sla = DATA.sla[m] || {};
+    const linhas = Object.values(sla).flatMap(b => b.linhas);
+    if (linhas.some(l => l.realizado > 0)) com.add(m);
+  });
+  return com;
+}
+
+function aplicarMesesNoSelect(selectId) {
+  const comDados = mesesComDados();
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  sel.innerHTML = MESES().map(m =>
+    comDados.has(m)
+      ? `<option value="${m}">${m}</option>`
+      : `<option value="${m}" disabled style="color:#c0cad8">${m}</option>`
+  ).join('');
+  // Selecionar o último mês com dados
+  const ultimo = [...comDados].pop();
+  if (ultimo) sel.value = ultimo;
+}
+
 function renderSla(root) {
   root.innerHTML = buildFilterBar('sla') + `<div class="sla-grid" id="sla-grid"></div>`;
-  setLastMes('sla-mes');
-  setTimeout(() => initChoices('sla-mes'), 0);
+  setTimeout(() => {
+    const comDados = mesesComDados();
+    const el = document.getElementById('sla-mes');
+    if (!el) return;
+    // Limpar options geradas pelo buildFilterBar antes do Choices inicializar
+    el.innerHTML = '';
+    new Choices(el, {
+      searchEnabled: false,
+      itemSelectText: '',
+      shouldSort: false,
+      allowHTML: false,
+      choices: MESES().map(m => ({
+        value: m,
+        label: m,
+        disabled: !comDados.has(m),
+        selected: m === [...comDados].pop(),
+      })),
+    });
+  }, 0);
   reRenderSla();
 }
 
@@ -478,44 +669,46 @@ function renderProjetos(root) {
   const inds  = [...new Set(DATA.projetos.map(p => p.indicador).filter(Boolean))].sort();
 
   root.innerHTML = `
-    <div class="filter-bar" style="flex-wrap:wrap;gap:12px">
-      <div class="filter-group">
-        <span class="filter-label">Indicador</span>
-        <select class="filter-select" id="proj-f-ind">
-          <option value="">Todos</option>
-          ${inds.map(i => `<option value="${i}">${i}</option>`).join('')}
-        </select>
+    <div class="proj-sticky-top">
+      <div class="filter-bar" style="flex-wrap:wrap;gap:12px">
+        <div class="filter-group">
+          <span class="filter-label">Indicador</span>
+          <select class="filter-select" id="proj-f-ind">
+            <option value="">Todos</option>
+            ${inds.map(i => `<option value="${i}">${i}</option>`).join('')}
+          </select>
+        </div>
+        <div class="filter-group">
+          <span class="filter-label">Responsável</span>
+          <select class="filter-select" id="proj-f-resp">
+            <option value="">Todos</option>
+            ${resps.map(r => `<option value="${r}">${r}</option>`).join('')}
+          </select>
+        </div>
+        <div class="filter-group">
+          <span class="filter-label">Compartilhado</span>
+          <select class="filter-select" id="proj-f-comp" onchange="reRenderProjetos()" style="min-width:120px">
+            <option value="">Todos</option>
+            <option value="Não">Não</option>
+            <option value="Sim">Sim</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <span class="filter-label">Status</span>
+          <select class="filter-select" id="proj-f-sta" onchange="reRenderProjetos()" style="min-width:120px">
+            <option value="">Todos</option>
+            <option value="J">🟢 Em dia</option>
+            <option value="L">🔴 Atrasado</option>
+          </select>
+        </div>
       </div>
-      <div class="filter-group">
-        <span class="filter-label">Responsável</span>
-        <select class="filter-select" id="proj-f-resp">
-          <option value="">Todos</option>
-          ${resps.map(r => `<option value="${r}">${r}</option>`).join('')}
-        </select>
-      </div>
-      <div class="filter-group">
-        <span class="filter-label">Compartilhado</span>
-        <select class="filter-select" id="proj-f-comp" onchange="reRenderProjetos()" style="min-width:120px">
-          <option value="">Todos</option>
-          <option value="Não">Não</option>
-          <option value="Sim">Sim</option>
-        </select>
-      </div>
-      <div class="filter-group">
-        <span class="filter-label">Status</span>
-        <select class="filter-select" id="proj-f-sta" onchange="reRenderProjetos()" style="min-width:120px">
-          <option value="">Todos</option>
-          <option value="J">🟢 Em dia</option>
-          <option value="L">🔴 Atrasado</option>
-        </select>
-      </div>
-    </div>
 
-    <div class="kpi-grid" id="proj-kpis"></div>
+      <div class="kpi-grid" id="proj-kpis"></div>
 
-    <div class="section-header">
-      <span class="section-title">Cronograma Anual</span>
-      <div class="section-line"></div>
+      <div class="section-header">
+        <span class="section-title">Cronograma Anual</span>
+        <div class="section-line"></div>
+      </div>
     </div>
     <div class="proj-wrapper" id="proj-tabela"></div>`;
 
@@ -523,20 +716,22 @@ function renderProjetos(root) {
   setTimeout(() => {
     initChoices('proj-f-comp');
     initChoices('proj-f-sta');
-    new Choices(document.getElementById('proj-f-ind'), {
+    const cInd = new Choices(document.getElementById('proj-f-ind'), {
       searchEnabled: true,
       searchPlaceholderValue: 'Buscar…',
       itemSelectText: '',
       shouldSort: false,
       allowHTML: false,
     });
-    new Choices(document.getElementById('proj-f-resp'), {
+    cInd.containerOuter.element.classList.add('choices--lg');
+    const cResp = new Choices(document.getElementById('proj-f-resp'), {
       searchEnabled: true,
       searchPlaceholderValue: 'Buscar…',
       itemSelectText: '',
       shouldSort: false,
       allowHTML: false,
     });
+    cResp.containerOuter.element.classList.add('choices--lg');
   }, 0);
 }
 
@@ -644,6 +839,8 @@ function reRenderProjetos() {
       ).join('');
 
       if (mi === 0) {
+        // Linha separadora de grupo
+        tbody += `<tr class="proj-group-row"><td colspan="${6 + 12}">📌 ${p.indicador}<span style="font-weight:400;color:#8394a8;font-size:0.71rem;margin-left:8px">— ${p.responsavel}</span></td></tr>`;
         tbody += `<tr class="${rowCls}">
           <td class="left" rowspan="3" style="max-width:220px;font-size:0.78rem;vertical-align:top">${p.indicador}</td>
           <td rowspan="3" style="max-width:120px;vertical-align:top" data-full="${marc}">
