@@ -10,7 +10,8 @@ import pandas as pd
 app = Flask(__name__, static_folder='static', template_folder='templates')
 
 BASE  = os.path.dirname(os.path.abspath(__file__))
-EXCEL = os.path.join(BASE, 'data', 'mid.xlsx')
+EXCEL     = os.path.join(BASE, 'data', 'mid.xlsx')
+EXCEL_SLA = os.path.join(BASE, 'data', 'sla.xlsx')
 
 MESES_PT = {
     1:'Janeiro',2:'Fevereiro',3:'Março',4:'Abril',5:'Maio',6:'Junho',
@@ -67,6 +68,74 @@ def safe_pct(v):
     except Exception:
         return 0.0
 
+def carregar_sla_jira():
+    """
+    Lê o sla.xlsx gerado pelo sync_jira.py e converte para o mesmo
+    formato de sla_data usado pelo dashboard.
+    Colunas esperadas: Mês, Tipo, Indicador, Área, Subárea,
+                       Meta, Realizado, Acumulado, Status
+    """
+    if not os.path.exists(EXCEL_SLA):
+        return {}
+
+    df = pd.read_excel(EXCEL_SLA, sheet_name='Report')
+    df.columns = [str(c).strip() for c in df.columns]
+    df['Mês'] = df['Mês'].apply(norm_mes)
+
+    for c in ['Meta', 'Realizado', 'Acumulado']:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+
+    # Só Suporte e Satisfação
+    df = df[df['Tipo'].isin(['Suporte', 'Satisfação'])].copy()
+
+    # Mapear subárea para o padrão do dashboard
+    SUBAREA_MAP = {
+        'Data Center':               'DATA CENTER',
+        'Redes':                     'REDES',
+        'Estação de Trabalho':       'SERVIÇOS (EST. TRABALHO)',
+        'Cybersegurança':            'GERAL',
+        'Comercial e Inovação':      'COMERCIAL & INOVAÇÃO',
+        'Relacionamento e Arrecadação': 'COMERCIAL & INOVAÇÃO',
+        'Operações e Engenharia':    'OPERAÇÕES & ENGENHARIA',
+        'Finanças e Planejamento':   'FINANÇAS & PLANEJAMENTO',
+        'Suprimentos e Apoio':       'SUPRIMENTOS & APOIO',
+        'Business Intelligence':     'BI',
+    }
+
+    sla_data = {}
+    for mes in ORDEM_MESES:
+        d = df[df['Mês'] == mes]
+        if d.empty:
+            continue
+        sla_data[mes] = {}
+        for _, row in d.iterrows():
+            tipo   = row['Tipo']
+            area   = str(row.get('Área', '')).strip()
+            subarea_raw = str(row.get('Subárea', '')).strip()
+            subarea = SUBAREA_MAP.get(subarea_raw, subarea_raw)
+
+            meta = round(float(row['Meta']) * 100, 1) if (pd.notna(row['Meta']) and row['Meta'] > 0) else None
+            real = round(float(row['Realizado']) * 100, 1) if pd.notna(row['Realizado']) else 0.0
+            acum = round(float(row['Acumulado']) * 100, 1) if pd.notna(row['Acumulado']) else 0.0
+            linha = {
+                'nome':      'Incidentes/Solicitação (%)' if tipo == 'Suporte' else 'Satisfação (%)',
+                'tipo':      tipo,
+                'meta':      meta,
+                'realizado': real,
+                'acumulado': acum,
+                'status':    str(row.get('Status', '')).upper().strip() or 'J',
+                'info_only': tipo == 'Satisfação' and area == 'Sistemas',
+                'area':      area,
+            }
+
+            if subarea not in sla_data[mes]:
+                sla_data[mes][subarea] = {'area': area, 'linhas': []}
+            sla_data[mes][subarea]['linhas'].append(linha)
+
+    return sla_data
+
+
 def carregar_dados():
     if not os.path.exists(EXCEL):
         return None, None
@@ -78,36 +147,39 @@ def carregar_dados():
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
 
-    # ── SLA ───────────────────────────────────────────────────────────────
-    df_sla = df[df['Tipo'].isin(['Suporte', 'Satisfação'])].copy()
-    df_sla[['area', 'subarea']] = df_sla['Indicador'].apply(
-        lambda x: pd.Series(classificar(x))
-    )
-    sla_data = {}
-    for mes in ORDEM_MESES:
-        d = df_sla[df_sla['Mês'] == mes]
-        if d.empty: continue
-        sla_data[mes] = {}
-        for area in ['Infraestrutura', 'Cybersegurança', 'Sistemas', 'Outros']:
-            da = d[d['area'] == area]
-            for sub in da['subarea'].unique():
-                ds = da[da['subarea'] == sub]
-                linhas = []
-                for _, row in ds.iterrows():
-                    tipo = row['Tipo']
-                    meta = round(float(row['Meta']) * 100, 1) if row['Meta'] > 0 else None
-                    linhas.append({
-                        'nome':      'Incidentes/Solicitação (%)' if tipo == 'Suporte' else 'Satisfação (%)',
-                        'tipo':      tipo,
-                        'meta':      meta,
-                        'realizado': round(float(row['Realizado']) * 100, 1),
-                        'acumulado': round(float(row['Acumulado']) * 100, 1),
-                        'status':    str(row['Status']).upper().strip(),
-                        'info_only': tipo == 'Satisfação' and area == 'Sistemas',
-                        'area':      area,
-                    })
-                if linhas:
-                    sla_data[mes][sub] = {'area': area, 'linhas': linhas}
+    # ── SLA: tenta sla.xlsx primeiro, fallback para mid.xlsx ──────────────
+    sla_data = carregar_sla_jira()
+
+    if not sla_data:
+        # Fallback: lê SLA do mid.xlsx como antes
+        df_sla = df[df['Tipo'].isin(['Suporte', 'Satisfação'])].copy()
+        df_sla[['area', 'subarea']] = df_sla['Indicador'].apply(
+            lambda x: pd.Series(classificar(x))
+        )
+        for mes in ORDEM_MESES:
+            d = df_sla[df_sla['Mês'] == mes]
+            if d.empty: continue
+            sla_data[mes] = {}
+            for area in ['Infraestrutura', 'Cybersegurança', 'Sistemas', 'Outros']:
+                da = d[d['area'] == area]
+                for sub in da['subarea'].unique():
+                    ds = da[da['subarea'] == sub]
+                    linhas = []
+                    for _, row in ds.iterrows():
+                        tipo = row['Tipo']
+                        meta = round(float(row['Meta']) * 100, 1) if row['Meta'] > 0 else None
+                        linhas.append({
+                            'nome':      'Incidentes/Solicitação (%)' if tipo == 'Suporte' else 'Satisfação (%)',
+                            'tipo':      tipo,
+                            'meta':      meta,
+                            'realizado': round(float(row['Realizado']) * 100, 1),
+                            'acumulado': round(float(row['Acumulado']) * 100, 1),
+                            'status':    str(row['Status']).upper().strip(),
+                            'info_only': tipo == 'Satisfação' and area == 'Sistemas',
+                            'area':      area,
+                        })
+                    if linhas:
+                        sla_data[mes][sub] = {'area': area, 'linhas': linhas}
 
     # ── PROJETOS (Tipo = Projeto ou Compartilhado) ─────────────────────────
     df_proj = df[df['Tipo'].isin(['Projeto', 'Compartilhado'])].copy()
